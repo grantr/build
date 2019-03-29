@@ -120,8 +120,7 @@ func main() {
 			buildTemplateInformer, clusterBuildTemplateInformer, timeoutHandler),
 		clusterbuildtemplate.NewController(logger, kubeClient, buildClient,
 			cachingClient, clusterBuildTemplateInformer, imageInformer),
-		buildtemplate.NewController(logger, kubeClient, buildClient,
-			cachingClient, buildTemplateInformer, imageInformer),
+		buildtemplate.NewController(logger, buildTemplateInformer, imageInformer),
 	}
 
 	go kubeInformerFactory.Start(stopCh)
