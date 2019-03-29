@@ -20,11 +20,14 @@ import (
 	"context"
 
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/kmeta"
@@ -32,16 +35,13 @@ import (
 	"github.com/knative/pkg/logging/logkey"
 
 	"github.com/knative/build/pkg/apis/build/v1alpha1"
-	clientset "github.com/knative/build/pkg/client/clientset/versioned"
 	buildscheme "github.com/knative/build/pkg/client/clientset/versioned/scheme"
 	informers "github.com/knative/build/pkg/client/informers/externalversions/build/v1alpha1"
-	listers "github.com/knative/build/pkg/client/listers/build/v1alpha1"
 	"github.com/knative/build/pkg/reconciler"
 	"github.com/knative/build/pkg/reconciler/buildtemplate"
 	"github.com/knative/build/pkg/reconciler/clusterbuildtemplate/resources"
-	cachingclientset "github.com/knative/caching/pkg/client/clientset/versioned"
+	caching "github.com/knative/caching/pkg/apis/caching/v1alpha1"
 	cachinginformers "github.com/knative/caching/pkg/client/informers/externalversions/caching/v1alpha1"
-	cachinglisters "github.com/knative/caching/pkg/client/listers/caching/v1alpha1"
 	"github.com/knative/pkg/system"
 )
 
@@ -49,16 +49,6 @@ const controllerAgentName = "clusterbuildtemplate-controller"
 
 // Reconciler is the controller.Reconciler implementation for ClusterBuildTemplates resources
 type Reconciler struct {
-	// kubeclientset is a standard kubernetes clientset
-	kubeclientset kubernetes.Interface
-	// buildclientset is a clientset for our own API group
-	buildclientset clientset.Interface
-	// cachingclientset is a clientset for creating caching resources.
-	cachingclientset cachingclientset.Interface
-
-	clusterBuildTemplatesLister listers.ClusterBuildTemplateLister
-	imagesLister                cachinglisters.ImageLister
-
 	// Sugared logger is easier to use but is not as performant as the
 	// raw logger. In performance critical paths, call logger.Desugar()
 	// and use the returned raw logger instead. In addition to the
@@ -79,9 +69,6 @@ func init() {
 // NewController returns a new build template controller
 func NewController(
 	logger *zap.SugaredLogger,
-	kubeclientset kubernetes.Interface,
-	buildclientset clientset.Interface,
-	cachingclientset cachingclientset.Interface,
 	clusterBuildTemplateInformer informers.ClusterBuildTemplateInformer,
 	imageInformer cachinginformers.ImageInformer,
 ) *controller.Impl {
@@ -90,12 +77,7 @@ func NewController(
 	logger = logger.Named(controllerAgentName).With(zap.String(logkey.ControllerType, controllerAgentName))
 
 	r := &Reconciler{
-		kubeclientset:               kubeclientset,
-		buildclientset:              buildclientset,
-		cachingclientset:            cachingclientset,
-		clusterBuildTemplatesLister: clusterBuildTemplateInformer.Lister(),
-		imagesLister:                imageInformer.Lister(),
-		Logger:                      logger,
+		Logger: logger,
 	}
 	impl := controller.NewImpl(r, logger, "ClusterBuildTemplates",
 		reconciler.MustNewStatsReporter("ClusterBuildTemplates", r.Logger))
@@ -123,7 +105,8 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 	logger := logging.FromContext(ctx)
 
 	// Get the ClusterBuildTemplate resource with this key
-	cbt, err := c.clusterBuildTemplatesLister.Get(key)
+	cbt := &v1alpha1.ClusterBuildTemplate{}
+	err := controller.Client.Get(ctx, types.NamespacedName{Name: key}, cbt)
 	if errors.IsNotFound(err) {
 		// The ClusterBuildTemplate resource may no longer exist, in which case we stop processing.
 		logger.Errorf("clusterbuildtemplate %q in work queue no longer exists", key)
@@ -142,20 +125,42 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 func (c *Reconciler) reconcileImageCaches(ctx context.Context, cbt *v1alpha1.ClusterBuildTemplate) error {
 	ics := resources.MakeImageCaches(cbt)
 
-	eics, err := c.imagesLister.Images(system.Namespace()).List(kmeta.MakeVersionLabelSelector(cbt))
+	eics := &caching.ImageList{}
+	opts := &client.ListOptions{
+		Namespace:     system.Namespace(),
+		LabelSelector: kmeta.MakeVersionLabelSelector(cbt),
+	}
+	err := controller.Client.List(ctx, opts, eics)
 	if err != nil {
 		return err
 	}
 
 	// Make sure we have all of the desired caching resources.
-	if err := buildtemplate.CreateMissingImageCaches(ctx, c.cachingclientset, ics, eics); err != nil {
+	if err := buildtemplate.CreateMissingImageCaches(ctx, ics, eics.Items); err != nil {
 		return err
 	}
 
 	// Delete any Image caches relevant to older versions of this resource.
-	propPolicy := metav1.DeletePropagationForeground
-	return c.cachingclientset.CachingV1alpha1().Images(system.Namespace()).DeleteCollection(
-		&metav1.DeleteOptions{PropagationPolicy: &propPolicy},
-		metav1.ListOptions{LabelSelector: kmeta.MakeOldVersionLabelSelector(cbt).String()},
-	)
+	imagesToDelete := &caching.ImageList{}
+	opts = &client.ListOptions{
+		Namespace:     system.Namespace(),
+		LabelSelector: kmeta.MakeOldVersionLabelSelector(cbt),
+	}
+	err = controller.Client.List(ctx, opts, imagesToDelete)
+	if err != nil {
+		return err
+	}
+	grp, _ := errgroup.WithContext(ctx)
+	for _, d := range imagesToDelete.Items {
+		d := d
+		grp.Go(func() error {
+			return controller.Client.Delete(ctx,
+				&d,
+				client.PropagationPolicy(metav1.DeletePropagationForeground),
+			)
+		})
+	}
+
+	// Wait for the deletes to complete.
+	return grp.Wait()
 }

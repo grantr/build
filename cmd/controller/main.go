@@ -118,8 +118,7 @@ func main() {
 	controllers := []*controller.Impl{
 		build.NewController(logger, kubeClient, podInformer, buildClient, buildInformer,
 			buildTemplateInformer, clusterBuildTemplateInformer, timeoutHandler),
-		clusterbuildtemplate.NewController(logger, kubeClient, buildClient,
-			cachingClient, clusterBuildTemplateInformer, imageInformer),
+		clusterbuildtemplate.NewController(logger, clusterBuildTemplateInformer, imageInformer),
 		buildtemplate.NewController(logger, buildTemplateInformer, imageInformer),
 	}
 
