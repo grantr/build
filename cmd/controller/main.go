@@ -76,6 +76,17 @@ func main() {
 		logger.Fatalf("Error building kubeconfig: %v", err)
 	}
 
+	start, err := controller.SetClient(cfg)
+	if err != nil {
+		logger.Fatalf("Error building Client: %v", err)
+	}
+	go func() {
+		err := start(stopCh)
+		if err != nil {
+			logger.Errorf("failed to start Client: %v", err)
+		}
+	}()
+
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		logger.Fatalf("Error building kubernetes clientset: %v", err)
