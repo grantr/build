@@ -23,9 +23,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/kmeta"
@@ -130,7 +133,8 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 	}
 
 	// Get the BuildTemplate resource with this namespace/name
-	bt, err := c.buildTemplatesLister.BuildTemplates(namespace).Get(name)
+	bt := &v1alpha1.BuildTemplate{}
+	err = controller.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, bt)
 	if errors.IsNotFound(err) {
 		// The BuildTemplate resource may no longer exist, in which case we stop processing.
 		logger.Errorf("buildtemplate %q in work queue no longer exists", key)
@@ -149,13 +153,18 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 func (c *Reconciler) reconcileImageCaches(ctx context.Context, bt *v1alpha1.BuildTemplate) error {
 	ics := resources.MakeImageCaches(bt)
 
-	eics, err := c.imagesLister.Images(bt.Namespace).List(kmeta.MakeVersionLabelSelector(bt))
+	eics := &caching.ImageList{}
+	opts := &client.ListOptions{
+		Namespace:     bt.Namespace,
+		LabelSelector: kmeta.MakeVersionLabelSelector(bt),
+	}
+	err := controller.Client.List(ctx, opts, eics)
 	if err != nil {
 		return err
 	}
 
 	// Make sure we have all of the desired caching resources.
-	if err := CreateMissingImageCaches(ctx, c.cachingclientset, ics, eics); err != nil {
+	if err := CreateMissingImageCaches(ctx, ics, eics.Items); err != nil {
 		return err
 	}
 
@@ -167,7 +176,7 @@ func (c *Reconciler) reconcileImageCaches(ctx context.Context, bt *v1alpha1.Buil
 	)
 }
 
-func missingImageCaches(desired []caching.Image, observed []*caching.Image) (missing []caching.Image) {
+func missingImageCaches(desired []caching.Image, observed []caching.Image) (missing []caching.Image) {
 	for _, d := range desired {
 		found := false
 		for _, o := range observed {
@@ -183,8 +192,7 @@ func missingImageCaches(desired []caching.Image, observed []*caching.Image) (mis
 	return missing
 }
 
-func CreateMissingImageCaches(ctx context.Context, client cachingclientset.Interface,
-	desired []caching.Image, observed []*caching.Image) error {
+func CreateMissingImageCaches(ctx context.Context, desired []caching.Image, observed []caching.Image) error {
 	missing := missingImageCaches(desired, observed)
 	if len(missing) == 0 {
 		return nil
@@ -194,8 +202,7 @@ func CreateMissingImageCaches(ctx context.Context, client cachingclientset.Inter
 	for _, m := range missing {
 		m := m
 		grp.Go(func() error {
-			_, err := client.CachingV1alpha1().Images(m.Namespace).Create(&m)
-			return err
+			return controller.Client.Create(ctx, &m)
 		})
 	}
 
