@@ -116,7 +116,7 @@ func main() {
 	timeoutHandler.CheckTimeouts()
 	// Build all of our controllers, with the clients constructed above.
 	controllers := []*controller.Impl{
-		build.NewController(logger, kubeClient, podInformer, buildClient, buildInformer,
+		build.NewController(logger, podInformer, buildInformer,
 			buildTemplateInformer, clusterBuildTemplateInformer, timeoutHandler),
 		clusterbuildtemplate.NewController(logger, clusterBuildTemplateInformer, imageInformer),
 		buildtemplate.NewController(logger, buildTemplateInformer, imageInformer),

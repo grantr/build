@@ -16,6 +16,7 @@ limitations under the License.
 package build
 
 import (
+	"context"
 	"testing"
 
 	"github.com/knative/build/pkg/apis/build/v1alpha1"
@@ -383,12 +384,10 @@ func TestValidateBuild(t *testing.T) {
 			testLogger := zap.NewNop().Sugar()
 
 			ac := &Reconciler{
-				kubeclientset:  client,
-				buildclientset: buildClient,
-				Logger:         testLogger,
+				Logger: testLogger,
 			}
 
-			verr := ac.validateBuild(c.build)
+			verr := ac.validateBuild(context.Background(), c.build)
 			if gotErr, wantErr := verr != nil, c.reason != ""; gotErr != wantErr {
 				t.Errorf("validateBuild(%s); got %v, want %q", name, verr, c.reason)
 			}

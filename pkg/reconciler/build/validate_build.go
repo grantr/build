@@ -16,18 +16,21 @@ limitations under the License.
 package build
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/knative/build/pkg/apis/build/v1alpha1"
 	"github.com/knative/build/pkg/reconciler/build/resources"
+	"github.com/knative/pkg/controller"
 )
 
-func (ac *Reconciler) validateBuild(b *v1alpha1.Build) error {
-	if err := ac.validateSecrets(b); err != nil {
+func (ac *Reconciler) validateBuild(ctx context.Context, b *v1alpha1.Build) error {
+	if err := ac.validateSecrets(ctx, b); err != nil {
 		return err
 	}
 
@@ -38,12 +41,14 @@ func (ac *Reconciler) validateBuild(b *v1alpha1.Build) error {
 	if b.Spec.Template != nil {
 		tmplName := b.Spec.Template.Name
 		if b.Spec.Template.Kind == v1alpha1.ClusterBuildTemplateKind && tmplName != "" {
-			tmpl, err = ac.buildclientset.BuildV1alpha1().ClusterBuildTemplates().Get(tmplName, metav1.GetOptions{})
+			tmpl := &v1alpha1.ClusterBuildTemplate{}
+			err = controller.Client.Get(ctx, types.NamespacedName{Name: tmplName}, tmpl)
 			if err != nil {
 				return err
 			}
 		} else if b.Spec.Template.Kind == v1alpha1.BuildTemplateKind || b.Spec.Template.Kind == "" && tmplName != "" {
-			tmpl, err = ac.buildclientset.BuildV1alpha1().BuildTemplates(b.Namespace).Get(tmplName, metav1.GetOptions{})
+			tmpl := &v1alpha1.BuildTemplate{}
+			err = controller.Client.Get(ctx, types.NamespacedName{Namespace: b.Namespace, Name: tmplName}, tmpl)
 			if err != nil {
 				return err
 			}
@@ -66,26 +71,28 @@ func (ac *Reconciler) validateBuild(b *v1alpha1.Build) error {
 	}
 
 	// Ensure the build can be translated to a Pod.
-	_, err = resources.MakePod(b, ac.kubeclientset)
+	_, err = resources.MakePod(ctx, b)
 	return err
 }
 
 // validateSecrets checks that if the Build specifies a ServiceAccount, that it
 // exists, and that any Secrets referenced by it exist, and have valid
 // annotations.
-func (ac *Reconciler) validateSecrets(b *v1alpha1.Build) error {
+func (ac *Reconciler) validateSecrets(ctx context.Context, b *v1alpha1.Build) error {
 	saName := b.Spec.ServiceAccountName
 	if saName == "" {
 		saName = "default"
 	}
 
-	sa, err := ac.kubeclientset.CoreV1().ServiceAccounts(b.Namespace).Get(saName, metav1.GetOptions{})
+	sa := &corev1.ServiceAccount{}
+	err := controller.Client.Get(ctx, types.NamespacedName{Namespace: b.Namespace, Name: saName}, sa)
 	if err != nil {
 		return err
 	}
 
 	for _, se := range sa.Secrets {
-		sec, err := ac.kubeclientset.CoreV1().Secrets(b.Namespace).Get(se.Name, metav1.GetOptions{})
+		sec := &corev1.Secret{}
+		err = controller.Client.Get(ctx, types.NamespacedName{Namespace: b.Namespace, Name: se.Name}, sec)
 		if err != nil {
 			return err
 		}

@@ -39,9 +39,14 @@ required = [
   revision = "3fc06fd3c9880a9ebb5c401f4b20cf6666cc7bc0"
 
 [[override]]
+  name = "sigs.k8s.io/controller-runtime"
+  source = "github.com/grantr/controller-runtime"
+  branch = "knative-fork"
+
+[[override]]
   name = "github.com/knative/pkg"
   source = "github.com/grantr/pkg"
-  branch = "cruntime-client"
+  revision = "cb5799a751ffce7475a1fee1674a3959520ac2ba"
 
 [[override]]
   name = "contrib.go.opencensus.io/exporter/stackdriver"

@@ -19,6 +19,7 @@ limitations under the License.
 package resources
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -28,11 +29,12 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/knative/pkg/controller"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/kubernetes"
 
 	v1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
 	"github.com/knative/build/pkg/credentials"
@@ -188,13 +190,14 @@ func customToContainer(source *corev1.Container, name string) (*corev1.Container
 	return custom, nil
 }
 
-func makeCredentialInitializer(build *v1alpha1.Build, kubeclient kubernetes.Interface) (*corev1.Container, []corev1.Volume, error) {
+func makeCredentialInitializer(ctx context.Context, build *v1alpha1.Build) (*corev1.Container, []corev1.Volume, error) {
 	serviceAccountName := build.Spec.ServiceAccountName
 	if serviceAccountName == "" {
 		serviceAccountName = "default"
 	}
 
-	sa, err := kubeclient.CoreV1().ServiceAccounts(build.Namespace).Get(serviceAccountName, metav1.GetOptions{})
+	sa := &corev1.ServiceAccount{}
+	err := controller.Client.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: serviceAccountName}, sa)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -206,7 +209,8 @@ func makeCredentialInitializer(build *v1alpha1.Build, kubeclient kubernetes.Inte
 	volumeMounts := implicitVolumeMounts
 	args := []string{}
 	for _, secretEntry := range sa.Secrets {
-		secret, err := kubeclient.CoreV1().Secrets(build.Namespace).Get(secretEntry.Name, metav1.GetOptions{})
+		secret := &corev1.Secret{}
+		err := controller.Client.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: secretEntry.Name}, secret)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -248,7 +252,7 @@ func makeCredentialInitializer(build *v1alpha1.Build, kubeclient kubernetes.Inte
 
 // MakePod converts a Build object to a Pod which implements the build specified
 // by the supplied CRD.
-func MakePod(build *v1alpha1.Build, kubeclient kubernetes.Interface) (*corev1.Pod, error) {
+func MakePod(ctx context.Context, build *v1alpha1.Build) (*corev1.Pod, error) {
 	build = build.DeepCopy()
 
 	// Copy annotations on the build through to the underlying pod to allow users
@@ -267,7 +271,7 @@ func MakePod(build *v1alpha1.Build, kubeclient kubernetes.Interface) (*corev1.Po
 	}
 	labels[buildNameLabelKey] = build.Name
 
-	cred, secrets, err := makeCredentialInitializer(build, kubeclient)
+	cred, secrets, err := makeCredentialInitializer(ctx, build)
 	if err != nil {
 		return nil, err
 	}

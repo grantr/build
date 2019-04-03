@@ -333,8 +333,7 @@
   revision = "3fc06fd3c9880a9ebb5c401f4b20cf6666cc7bc0"
 
 [[projects]]
-  branch = "cruntime-client"
-  digest = "1:3c96a9133ef99db9b05c167a25d67b26fe2312ea12fd43ed6d4608740b8d27ee"
+  digest = "1:f5510810eff1b858017db8f9a2704741e1c765a6a1db0b4bd5bf1555e50ed493"
   name = "github.com/knative/pkg"
   packages = [
     "apis",
@@ -367,7 +366,7 @@
     "webhook",
   ]
   pruneopts = "NUT"
-  revision = "546853ea79e414b412fa3034188f52100b1f4e73"
+  revision = "cb5799a751ffce7475a1fee1674a3959520ac2ba"
   source = "github.com/grantr/pkg"
 
 [[projects]]
@@ -1103,18 +1102,19 @@
 
 [[projects]]
   branch = "knative-fork"
-  digest = "1:06d86ec2b51ca4e0d7303c08c2f34ab5a27455990dd56fbaffb8fd0119b8d8cf"
+  digest = "1:764bb0774a4233dac8fea7e325dddc53eb2ec8c341efea7bbf85d42571296c13"
   name = "sigs.k8s.io/controller-runtime"
   packages = [
     "pkg/cache",
     "pkg/cache/internal",
     "pkg/client",
     "pkg/client/apiutil",
+    "pkg/client/fake",
     "pkg/runtime/log",
   ]
   pruneopts = "NUT"
   revision = "392f43f890343e1fbefb0bbe3cbf9314e64565ba"
-  source = "https://github.com/grantr/controller-runtime"
+  source = "github.com/grantr/controller-runtime"
 
 [solve-meta]
   analyzer-name = "dep"
@@ -1127,7 +1127,6 @@
     "github.com/knative/caching/pkg/client/clientset/versioned",
     "github.com/knative/caching/pkg/client/informers/externalversions",
     "github.com/knative/caching/pkg/client/informers/externalversions/caching/v1alpha1",
-    "github.com/knative/caching/pkg/client/listers/caching/v1alpha1",
     "github.com/knative/pkg/apis",
     "github.com/knative/pkg/apis/duck",
     "github.com/knative/pkg/apis/duck/v1alpha1",
@@ -1170,7 +1169,6 @@
     "k8s.io/client-go/kubernetes/fake",
     "k8s.io/client-go/kubernetes/scheme",
     "k8s.io/client-go/kubernetes/typed/core/v1",
-    "k8s.io/client-go/listers/core/v1",
     "k8s.io/client-go/plugin/pkg/client/auth",
     "k8s.io/client-go/plugin/pkg/client/auth/gcp",
     "k8s.io/client-go/rest",
@@ -1183,6 +1181,8 @@
     "k8s.io/code-generator/cmd/defaulter-gen",
     "k8s.io/code-generator/cmd/informer-gen",
     "k8s.io/code-generator/cmd/lister-gen",
+    "sigs.k8s.io/controller-runtime/pkg/client",
+    "sigs.k8s.io/controller-runtime/pkg/client/fake",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1

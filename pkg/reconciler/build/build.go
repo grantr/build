@@ -23,10 +23,8 @@ import (
 	"time"
 
 	v1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
-	clientset "github.com/knative/build/pkg/client/clientset/versioned"
 	buildscheme "github.com/knative/build/pkg/client/clientset/versioned/scheme"
 	informers "github.com/knative/build/pkg/client/informers/externalversions/build/v1alpha1"
-	listers "github.com/knative/build/pkg/client/listers/build/v1alpha1"
 	"github.com/knative/build/pkg/reconciler"
 	"github.com/knative/build/pkg/reconciler/build/resources"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
@@ -37,11 +35,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	coreinformers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -52,16 +49,7 @@ const (
 
 // Reconciler is the controller.Reconciler implementation for Builds resources
 type Reconciler struct {
-	// kubeclientset is a standard kubernetes clientset
-	kubeclientset kubernetes.Interface
-	// buildclientset is a clientset for our own API group
-	buildclientset clientset.Interface
 	timeoutHandler *TimeoutSet
-
-	buildsLister                listers.BuildLister
-	buildTemplatesLister        listers.BuildTemplateLister
-	clusterBuildTemplatesLister listers.ClusterBuildTemplateLister
-	podsLister                  corelisters.PodLister
 
 	// Sugared logger is easier to use but is not as performant as the
 	// raw logger. In performance critical paths, call logger.Desugar()
@@ -84,9 +72,7 @@ func init() {
 // NewController returns a new build template controller
 func NewController(
 	logger *zap.SugaredLogger,
-	kubeclientset kubernetes.Interface,
 	podInformer coreinformers.PodInformer,
-	buildclientset clientset.Interface,
 	buildInformer informers.BuildInformer,
 	buildTemplateInformer informers.BuildTemplateInformer,
 	clusterBuildTemplateInformer informers.ClusterBuildTemplateInformer,
@@ -97,14 +83,8 @@ func NewController(
 	logger = logger.Named(controllerAgentName).With(zap.String(logkey.ControllerType, controllerAgentName))
 
 	r := &Reconciler{
-		kubeclientset:               kubeclientset,
-		buildclientset:              buildclientset,
-		buildsLister:                buildInformer.Lister(),
-		buildTemplatesLister:        buildTemplateInformer.Lister(),
-		clusterBuildTemplatesLister: clusterBuildTemplateInformer.Lister(),
-		podsLister:                  podInformer.Lister(),
-		Logger:                      logger,
-		timeoutHandler:              timeoutHandler,
+		Logger:         logger,
+		timeoutHandler: timeoutHandler,
 	}
 	impl := controller.NewImpl(r, logger, "Builds",
 		reconciler.MustNewStatsReporter("Builds", r.Logger))
@@ -141,7 +121,8 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 	}
 
 	// Get the Build resource with this namespace/name
-	build, err := c.buildsLister.Builds(namespace).Get(name)
+	build := &v1alpha1.Build{}
+	err = controller.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, build)
 	if errors.IsNotFound(err) {
 		// The Build resource may no longer exist, in which case we stop processing.
 		logger.Errorf("build %q in work queue no longer exists", key)
@@ -160,7 +141,7 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 
 	// If the build's status is cancelled, kill resources and update status
 	if isCancelled(build.Spec) {
-		return c.cancelBuild(build, logger)
+		return c.cancelBuild(ctx, build, logger)
 	}
 
 	// If the build hasn't started yet, validate it and create a Pod for it
@@ -185,11 +166,11 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 				Time: time.Now(),
 			},
 		}
-		if err := c.updateStatus(build); err != nil {
+		if err := c.updateStatus(ctx, build); err != nil {
 			return err
 		}
 
-		if err = c.validateBuild(build); err != nil {
+		if err = c.validateBuild(ctx, build); err != nil {
 			logger.Errorf("Failed to validate build: %v", err)
 			build.Status = v1alpha1.BuildStatus{
 				Cluster: &v1alpha1.ClusterSpec{
@@ -202,13 +183,13 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 				Reason:  "BuildValidationFailed",
 				Message: err.Error(),
 			})
-			if err := c.updateStatus(build); err != nil {
+			if err := c.updateStatus(ctx, build); err != nil {
 				return err
 			}
 			return err
 		}
 
-		p, err = c.startPodForBuild(build)
+		p, err = c.startPodForBuild(ctx, build)
 		if err != nil {
 			build.Status.SetCondition(&duckv1alpha1.Condition{
 				Type:    v1alpha1.BuildSucceeded,
@@ -216,7 +197,7 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 				Reason:  "BuildExecuteFailed",
 				Message: err.Error(),
 			})
-			if err := c.updateStatus(build); err != nil {
+			if err := c.updateStatus(ctx, build); err != nil {
 				return err
 			}
 			return err
@@ -226,7 +207,10 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 	} else {
 		// If the build is ongoing, update its status based on its pod, and
 		// check if it's timed out.
-		p, err = c.podsLister.Pods(build.Namespace).Get(build.Status.Cluster.PodName)
+		pod := &corev1.Pod{}
+		err = controller.Client.Get(ctx,
+			types.NamespacedName{Namespace: build.Namespace, Name: build.Status.Cluster.PodName},
+			pod)
 		if err != nil {
 			// TODO: What if the pod is deleted out from under us?
 			return err
@@ -244,13 +228,14 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		defer statusMap.Delete(key)
 	}
 
-	return c.updateStatus(build)
+	return c.updateStatus(ctx, build)
 }
 
-func (c *Reconciler) updateStatus(u *v1alpha1.Build) error {
+func (c *Reconciler) updateStatus(ctx context.Context, u *v1alpha1.Build) error {
 	statusLock(u)
 	defer statusUnlock(u)
-	newb, err := c.buildclientset.BuildV1alpha1().Builds(u.Namespace).Get(u.Name, metav1.GetOptions{})
+	newb := &v1alpha1.Build{}
+	err := controller.Client.Get(ctx, types.NamespacedName{Namespace: u.Namespace, Name: u.Name}, newb)
 	if err != nil {
 		return err
 	}
@@ -262,20 +247,21 @@ func (c *Reconciler) updateStatus(u *v1alpha1.Build) error {
 
 	newb.Status = u.Status
 
-	_, err = c.buildclientset.BuildV1alpha1().Builds(u.Namespace).UpdateStatus(newb)
+	err = controller.Client.Status().Update(ctx, newb)
 	return err
 }
 
 // startPodForBuild starts a new Pod to execute the build.
 //
 // This applies any build template that's specified, and creates the pod.
-func (c *Reconciler) startPodForBuild(build *v1alpha1.Build) (*corev1.Pod, error) {
+func (c *Reconciler) startPodForBuild(ctx context.Context, build *v1alpha1.Build) (*corev1.Pod, error) {
 	namespace := build.Namespace
 	var tmpl v1alpha1.BuildTemplateInterface
 	var err error
 	if build.Spec.Template != nil {
 		if build.Spec.Template.Kind == v1alpha1.ClusterBuildTemplateKind {
-			tmpl, err = c.clusterBuildTemplatesLister.Get(build.Spec.Template.Name)
+			tmpl := &v1alpha1.ClusterBuildTemplate{}
+			err = controller.Client.Get(ctx, types.NamespacedName{Name: build.Spec.Template.Name}, tmpl)
 			if err != nil {
 				// The ClusterBuildTemplate resource may not exist.
 				if errors.IsNotFound(err) {
@@ -284,7 +270,8 @@ func (c *Reconciler) startPodForBuild(build *v1alpha1.Build) (*corev1.Pod, error
 				return nil, err
 			}
 		} else {
-			tmpl, err = c.buildTemplatesLister.BuildTemplates(namespace).Get(build.Spec.Template.Name)
+			tmpl := &v1alpha1.BuildTemplate{}
+			err = controller.Client.Get(ctx, types.NamespacedName{Name: build.Spec.Template.Name}, tmpl)
 			if err != nil {
 				// The BuildTemplate resource may not exist.
 				if errors.IsNotFound(err) {
@@ -299,12 +286,14 @@ func (c *Reconciler) startPodForBuild(build *v1alpha1.Build) (*corev1.Pod, error
 		return nil, err
 	}
 
-	p, err := resources.MakePod(build, c.kubeclientset)
+	p, err := resources.MakePod(ctx, build)
 	if err != nil {
 		return nil, err
 	}
 	c.Logger.Infof("Creating pod %q in namespace %q for build %q", p.Name, p.Namespace, build.Name)
-	return c.kubeclientset.CoreV1().Pods(p.Namespace).Create(p)
+
+	err = controller.Client.Create(ctx, p)
+	return p, err
 }
 
 // isCancelled returns true if the build's spec indicates the build is cancelled.
@@ -312,7 +301,7 @@ func isCancelled(buildSpec v1alpha1.BuildSpec) bool {
 	return buildSpec.Status == v1alpha1.BuildSpecStatusCancelled
 }
 
-func (c *Reconciler) cancelBuild(build *v1alpha1.Build, logger *zap.SugaredLogger) error {
+func (c *Reconciler) cancelBuild(ctx context.Context, build *v1alpha1.Build, logger *zap.SugaredLogger) error {
 	logger.Warnf("Build has been cancelled: %v", build.Name)
 	build.Status.SetCondition(&duckv1alpha1.Condition{
 		Type:    v1alpha1.BuildSucceeded,
@@ -320,14 +309,28 @@ func (c *Reconciler) cancelBuild(build *v1alpha1.Build, logger *zap.SugaredLogge
 		Reason:  "BuildCancelled",
 		Message: fmt.Sprintf("Build %q was cancelled", build.Name),
 	})
-	if err := c.updateStatus(build); err != nil {
+	if err := c.updateStatus(ctx, build); err != nil {
 		return err
 	}
 	if build.Status.Cluster == nil {
 		logger.Warnf("build %q has no pod running yet", build.Name)
 		return nil
 	}
-	if err := c.kubeclientset.CoreV1().Pods(build.Namespace).Delete(build.Status.Cluster.PodName, &metav1.DeleteOptions{}); err != nil {
+
+	return c.deletePod(ctx, build)
+}
+
+func (c *Reconciler) deletePod(ctx context.Context, build *v1alpha1.Build) error {
+	// Get the pod from cache.
+	pod := &corev1.Pod{}
+	if err := controller.Client.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: build.Status.Cluster.PodName}, pod); err != nil {
+		if errors.IsNotFound(err) {
+			// Pod already deleted
+			return nil
+		}
+		return err
+	}
+	if err := controller.Client.Delete(ctx, pod); err != nil {
 		return err
 	}
 	return nil
@@ -339,7 +342,7 @@ func isDone(status *v1alpha1.BuildStatus) bool {
 	return cond != nil && cond.Status != corev1.ConditionUnknown
 }
 
-func (c *Reconciler) checkTimeout(build *v1alpha1.Build) error {
+func (c *Reconciler) checkTimeout(ctx context.Context, build *v1alpha1.Build) error {
 	// If build has not started timeout, startTime should be zero.
 	if build.Status.StartTime.IsZero() {
 		return nil
@@ -353,7 +356,7 @@ func (c *Reconciler) checkTimeout(build *v1alpha1.Build) error {
 	runtime := time.Since(build.Status.StartTime.Time)
 	if runtime > timeout {
 		c.Logger.Infof("Build %q is timeout (runtime %s over %s), deleting pod", build.Name, runtime, timeout)
-		if err := c.kubeclientset.CoreV1().Pods(build.Namespace).Delete(build.Status.Cluster.PodName, &metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		if err := c.deletePod(ctx, build); err != nil {
 			c.Logger.Errorf("Failed to terminate pod: %v", err)
 			return err
 		}

@@ -52,6 +52,12 @@ func SetClient(config *rest.Config) (StartFunc, error) {
 	return start, err
 }
 
+// UnsafeSetClient sets the package-level Client manually for testing. This
+// function is not thread-safe.
+func UnsafeSetClient(c client.Client) {
+	Client = c
+}
+
 func newClient(config *rest.Config) (client.Client, StartFunc, error) {
 	if config == nil {
 		return nil, nil, fmt.Errorf("must specify Config")

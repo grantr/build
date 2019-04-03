@@ -95,7 +95,7 @@ func (f *fixture) newReconciler(stopCh <-chan struct{}) (controller.Reconciler, 
 	clusterBuildTemplateInformer := i.Build().V1alpha1().ClusterBuildTemplates()
 	podInformer := k8sI.Core().V1().Pods()
 	timeoutHandler := NewTimeoutHandler(logger, f.kubeclient, f.client, stopCh)
-	c := NewController(logger, f.kubeclient, podInformer, f.client, buildInformer, buildTemplateInformer, clusterBuildTemplateInformer, timeoutHandler)
+	c := NewController(logger, podInformer, buildInformer, buildTemplateInformer, clusterBuildTemplateInformer, timeoutHandler)
 	return c.Reconciler, i, k8sI
 }
 
@@ -422,7 +422,7 @@ func TestBasicFlows(t *testing.T) {
 		podStatus: corev1.PodStatus{
 			Phase: corev1.PodPending,
 			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init status; ignored
+			// creds-init status; ignored
 			}, {
 				Name: "status-name",
 				State: corev1.ContainerState{

@@ -17,6 +17,7 @@ limitations under the License.
 package resources
 
 import (
+	"context"
 	"crypto/rand"
 	"strings"
 	"testing"
@@ -26,11 +27,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	fakek8s "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
 	"github.com/knative/pkg/apis"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
+	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/system"
 	_ "github.com/knative/pkg/system/testing"
 )
@@ -446,7 +450,7 @@ func TestMakePod(t *testing.T) {
 		},
 	}} {
 		t.Run(c.desc, func(t *testing.T) {
-			cs := fakek8s.NewSimpleClientset(
+			controller.UnsafeSetClient(fake.NewFakeClientWithScheme(scheme.Scheme,
 				&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
 				&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "service-account"},
 					Secrets: []corev1.ObjectReference{{
@@ -467,7 +471,7 @@ func TestMakePod(t *testing.T) {
 						"password": []byte("BestEver"),
 					},
 				},
-			)
+			))
 			b := &v1alpha1.Build{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        "build-name",
@@ -480,7 +484,7 @@ func TestMakePod(t *testing.T) {
 					},
 				},
 			}
-			got, err := MakePod(b, cs)
+			got, err := MakePod(context.Background(), b)
 			if err != c.wantErr {
 				t.Fatalf("MakePod: %v", err)
 			}
@@ -523,7 +527,7 @@ func TestBuildStatusFromPod(t *testing.T) {
 		desc: "ignore-creds-init",
 		podStatus: corev1.PodStatus{
 			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init; ignored
+			// creds-init; ignored
 			}, {
 				Name: "state-name",
 				State: corev1.ContainerState{
@@ -534,7 +538,7 @@ func TestBuildStatusFromPod(t *testing.T) {
 			}},
 		},
 		buildSpec: v1alpha1.BuildSpec{
-			// no sources.
+		// no sources.
 		},
 		want: v1alpha1.BuildStatus{
 			StepsCompleted: []string{"state-name"},
@@ -548,9 +552,9 @@ func TestBuildStatusFromPod(t *testing.T) {
 		desc: "ignore-creds-init-and-source",
 		podStatus: corev1.PodStatus{
 			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init; ignored.
+			// creds-init; ignored.
 			}, {
-				// git-init; ignored.
+			// git-init; ignored.
 			}, {
 				Name: "state-name",
 				State: corev1.ContainerState{
@@ -580,11 +584,11 @@ func TestBuildStatusFromPod(t *testing.T) {
 		desc: "ignore-creds-init-and-multiple-sources",
 		podStatus: corev1.PodStatus{
 			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init; ignored.
+			// creds-init; ignored.
 			}, {
-				// first git-init; ignored.
+			// first git-init; ignored.
 			}, {
-				// second git-init; ignored.
+			// second git-init; ignored.
 			}, {
 				Name: "state-name",
 				State: corev1.ContainerState{
@@ -643,7 +647,7 @@ func TestBuildStatusFromPod(t *testing.T) {
 		podStatus: corev1.PodStatus{
 			Phase: corev1.PodFailed,
 			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init status; ignored
+			// creds-init status; ignored
 			}, {
 				Name:    "status-name",
 				ImageID: "image-id",
@@ -701,7 +705,7 @@ func TestBuildStatusFromPod(t *testing.T) {
 		podStatus: corev1.PodStatus{
 			Phase: corev1.PodPending,
 			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init status; ignored
+			// creds-init status; ignored
 			}, {
 				Name: "status-name",
 				State: corev1.ContainerState{
